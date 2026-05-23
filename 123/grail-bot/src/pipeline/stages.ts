@@ -22,6 +22,8 @@ import {
   SkipTokenError,
 } from '../core/errors.js';
 import type { Config } from '../core/config.js';
+import { sendPackOpenedNotification } from '../telegram/notifier.js';
+import { incrementSessionPacks, getSessionPacksOpened } from '../core/sessionState.js';
 
 export interface StageContext {
   wallet: Wallet;
@@ -127,6 +129,32 @@ export async function stageDiscoverTokens(ctx: StageContext): Promise<void> {
   // In production, scan Transfer events TO this wallet from the open tx block.
   const existing = db.getTokensByWallet(wallet.address);
   log.info({ tokenCount: existing.length }, 'Tokens in DB post-open');
+
+  // ── Telegram-уведомление об открытии пака ─────────────────────────────────
+  // Увеличиваем счётчик паков за сессию (по количеству паков куплено за раз)
+  const packsThisWallet = parseInt(process.env['PACKS_PER_WALLET'] ?? '1', 10);
+  incrementSessionPacks(packsThisWallet);
+  const sessionPackCount = getSessionPacksOpened();
+
+  // Формируем список токенов с human-readable количеством
+  const tokenInfos = existing
+    .filter((t) => t.symbol !== null && t.decimals !== null && t.skip_reason === null)
+    .map((t) => ({
+      symbol: t.symbol!,
+      amount: parseFloat(formatUnits(BigInt(t.raw_amount), t.decimals!)),
+    }));
+
+  // Получаем индекс кошелька из свежей строки БД
+  const freshRow = db.getWallet(wallet.address);
+  const walletIndex = freshRow?.index_in_csv ?? ctx.row.index_in_csv;
+
+  // Отправляем уведомление (ошибки внутри не пробрасываются)
+  await sendPackOpenedNotification({
+    walletIndex,
+    sessionPackCount,
+    tokens: tokenInfos,
+  });
+  // ──────────────────────────────────────────────────────────────────────────
 
   db.updateWalletState(wallet.address, 'TOKENS_DISCOVERED');
 }
