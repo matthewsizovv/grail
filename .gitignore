@@ -7,3 +7,8 @@ data/
 .env
 logs/
 *.jsonl
+
+# Кошельки — никогда не коммитить!
+wallets.csv
+wallets_*.csv
+*_wallets.csv
