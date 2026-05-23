@@ -1,20 +1,24 @@
 /**
- * Модуль покупки паков Grail.xyz — Phase 0 ЗАВЕРШЁН.
+ * Модуль покупки паков Grail.xyz.
  *
  * Поток (commit-reveal + USDC permit):
  *   1. POST /api/packs/redeem/prepare → challenge + typed data
- *   2. wallet.signTypedData(usdc_permit_typed_data) → permitSig  (без транзакции!)
+ *   2. wallet.signTypedData(usdc_permit_typed_data)     → permitSig  (без approve!)
  *   3. wallet.signTypedData(user_attestation_typed_data) → userSig
- *   4. redeemPacks(challengeParams, userSig, permitParams, permitSig) → tx
+ *   4. buildRedeemCalldata() → 21-slot calldata (сектор подтверждён: 0x2bb1bc60)
+ *   5. отправляем транзакцию в PACK_SALE
  *
- * Ключевое: USDC permit заменяет approve-транзакцию (газ экономится).
+ * Структура calldata (21 слот × 32 байта, декодировано из реального tx):
+ *   [0-6]   USDC permit: owner, spender, value, deadline, permitV, permitR, permitS
+ *   [7-14]  Attestation: все поля GrailPackUserAttestation в порядке из types[]
+ *           (динамически читаются из API — включая скрытые hubAddress, drawSalt и т.д.)
+ *   [15-17] userSig:    v, r, s  (подпись user_attestation_typed_data)
+ *   [18-20] backendSig: v, r, s  (подпись бэкенда Grail, приходит из API)
  *
- * TODO: подтвердить точную сигнатуру redeemPacks() через BaseScan.
- *   Найди хэш своей покупки → basescan.org/tx/<hash> → Input Data → Decode
- *   Или скинь хэш транзакции и я декодирую.
+ * Ссылка на реальный tx (Base): 0x0b63506498222a6e68c7a7b900802e6f8fcd0f651d307843006eb376aec5eff0
  */
 
-import { Contract, type Wallet, type TypedDataDomain } from 'ethers';
+import { Contract, AbiCoder, Signature, type Wallet, type TypedDataDomain } from 'ethers';
 import { getTxBuilder } from '../chain/txBuilder.js';
 import { getRpcPool } from '../chain/rpcPool.js';
 import { balanceOf } from '../chain/erc20.js';
@@ -24,7 +28,12 @@ import {
   PACK_NFT_IFACE,
   PACKS_PER_WALLET,
 } from './contracts.js';
-import { preparePackRedeem, type Eip712TypedData, type Eip712TypeField } from './api.js';
+import {
+  preparePackRedeem,
+  type Eip712TypedData,
+  type Eip712TypeField,
+  type PrepareRedeemResponse,
+} from './api.js';
 import { walletLogger } from '../core/logger.js';
 import { WalletBlockedError, FatalError } from '../core/errors.js';
 import { getDB } from '../core/db.js';
@@ -61,11 +70,19 @@ export async function buyPacks(
   // ── Шаг 1: получаем challenge от API ──────────────────────────────────────
   const prepare = await preparePackRedeem(wallet.address, remaining);
 
+  // Логируем все поля ответа API — поможет найти имя backend_sig поля
   log.debug(
     {
       challenge: prepare.pack_challenge_id,
       draws_per_pack: prepare.draws_per_pack,
       expires_at: prepare.expires_at,
+      // Все ключи верхнего уровня (включая неизвестные поля бэкенда)
+      apiKeys: Object.keys(prepare),
+      attestationFields: (
+        prepare.user_attestation_typed_data.types[
+          prepare.user_attestation_typed_data.primaryType
+        ] ?? []
+      ).map((f: Eip712TypeField) => `${f.name}:${f.type}`),
     },
     'Challenge получен от API',
   );
@@ -86,15 +103,7 @@ export async function buyPacks(
   log.debug({ sigLen: userSig.length }, 'Attestation подписан');
 
   // ── Шаг 4: строим calldata для redeemPacks() ──────────────────────────────
-  const attestation = prepare.user_attestation_typed_data.message;
-  const permit = prepare.usdc_permit_typed_data.message;
-
-  const calldata = buildRedeemCalldata(
-    attestation,
-    userSig,
-    permit,
-    permitSig,
-  );
+  const calldata = buildRedeemCalldata(prepare, userSig, permitSig);
 
   // ── Шаг 5: отправляем транзакцию ──────────────────────────────────────────
   const [balEth, balUsdc, blockNum] = await Promise.all([
@@ -190,62 +199,160 @@ function coerceMessageValues(
 // ── Построение calldata для redeemPacks() ────────────────────────────────────
 
 /**
- * Строит calldata для вызова redeemPacks().
+ * Строит calldata для вызова redeemPacks() на контракте GrailPackHub.
  *
- * BEST-GUESS параметры — нужно подтвердить через BaseScan!
+ * Использует ПОДТВЕРЖДЁННЫЙ селектор 0x2bb1bc60 (декодирован из реального tx
+ * 0x0b63506498222a6e68c7a7b900802e6f8fcd0f651d307843006eb376aec5eff0).
  *
- * Если транзакция ревертится — скинь хэш своей покупки,
- * декодируем точную сигнатуру из реального tx.
+ * 21-slot layout (каждый слот 32 байта):
+ *   [0-6]   USDC permit: owner, spender, value, deadline, v, r, s
+ *   [7-14]  Attestation: все поля GrailPackUserAttestation по порядку из types[]
+ *           Читаются ДИНАМИЧЕСКИ из API — включая скрытые hubAddress, drawSalt и т.д.
+ *   [15-17] userSig разбитый на v, r, s
+ *   [18-20] backendSig разбитый на v, r, s (подпись сервера Grail)
  *
- * Текущая гипотеза:
- *   redeemPacks(
- *     bytes32 packChallengeId,
- *     bytes32 packId,
- *     uint256 packCount,
- *     bytes32 serverSecretHash,
- *     uint256 expiry,
- *     bytes   userSig,
- *     uint256 permitValue,
- *     uint256 permitNonce,
- *     uint256 permitDeadline,
- *     bytes   permitSig
- *   )
+ * Если контракт ревертится:
+ *   1. Проверь что backendSig правильно получен из API
+ *   2. Попробуй поменять порядок userSig/backendSig (15-17 ↔ 18-20)
+ *   3. Скинь хэш упавшей tx — посмотрим revert reason через cast run
  */
 function buildRedeemCalldata(
-  attestation: Record<string, unknown>,
+  prepare: PrepareRedeemResponse,
   userSig: string,
-  permit: Record<string, unknown>,
   permitSig: string,
 ): string {
-  const packChallengeId = attestation['packChallengeId'] as string;
-  const packId = attestation['packId'] as string;
-  const packCount = BigInt(attestation['packCount'] as string | number);
-  const serverSecretHash = attestation['serverSecretHash'] as string;
-  const expiry = BigInt(attestation['expiry'] as string | number);
+  // Подтверждённый селектор из реального tx
+  const SELECTOR = '0x2bb1bc60';
+  const coder = AbiCoder.defaultAbiCoder();
 
-  const permitValue = BigInt(permit['value'] as string | number);
-  const permitNonce = BigInt(permit['nonce'] as string | number);
-  const permitDeadline = BigInt(permit['deadline'] as string | number);
+  // ── USDC Permit ─────────────────────────────────────────────────────────────
+  const permit = prepare.usdc_permit_typed_data.message;
+  const pSig = Signature.from(permitSig);
+
+  // ── User Attestation — читаем ВСЕ поля динамически ────────────────────────
+  // API возвращает полный types[] со всеми скрытыми полями (hubAddress, drawSalt…)
+  // Порядок полей в типе = порядок слотов в calldata
+  const attestation = prepare.user_attestation_typed_data.message;
+  const attestationTypeDef =
+    prepare.user_attestation_typed_data.types[
+      prepare.user_attestation_typed_data.primaryType
+    ] ?? [];
+
+  if (attestationTypeDef.length === 0) {
+    throw new FatalError(
+      `types["${prepare.user_attestation_typed_data.primaryType}"] пуст или не найден. ` +
+      `Доступные типы: ${JSON.stringify(Object.keys(prepare.user_attestation_typed_data.types))}`,
+    );
+  }
+
+  const attestationTypes: string[] = [];
+  const attestationValues: unknown[] = [];
+
+  for (const field of attestationTypeDef) {
+    const raw = attestation[field.name];
+    if (raw === undefined) {
+      throw new FatalError(
+        `Поле "${field.name}" отсутствует в attestation.message.\n` +
+        `Имеющиеся поля: ${JSON.stringify(Object.keys(attestation))}\n` +
+        `Полный message: ${JSON.stringify(attestation)}`,
+      );
+    }
+    attestationTypes.push(field.type);
+    if (/^u?int\d*$/.test(field.type)) {
+      attestationValues.push(BigInt(raw as string | number));
+    } else {
+      attestationValues.push(raw as string);
+    }
+  }
+
+  // Ожидаем ровно 8 полей (slots 7-14). Если не 8 — предупреждаем, но не падаем.
+  if (attestationTypes.length !== 8) {
+    // This is just a warning — if tx reverts we'll need to debug
+    process.stderr.write(
+      `[WARN] Attestation fields: ${attestationTypes.length} (expected 8). ` +
+      `Fields: ${attestationTypeDef.map((f) => f.name).join(', ')}\n`,
+    );
+  }
+
+  // ── User Signature ───────────────────────────────────────────────────────────
+  const uSig = Signature.from(userSig);
+
+  // ── Backend Signature ─────────────────────────────────────────────────────────
+  // Grail бэкенд подписывает attestation — авторизует покупку.
+  // Ищем в ответе API по нескольким возможным именам поля.
+  const backendSigRaw =
+    prepare.backend_sig ??
+    prepare.server_sig ??
+    prepare.hub_sig ??
+    prepare.attestation_sig ??
+    // Иногда вложено в user_attestation_typed_data (нестандартное поле)
+    ((prepare.user_attestation_typed_data as unknown) as Record<string, unknown>)['server_sig'] as string | undefined ??
+    ((prepare.user_attestation_typed_data as unknown) as Record<string, unknown>)['backend_sig'] as string | undefined;
+
+  if (!backendSigRaw) {
+    // Выводим все поля API чтобы пользователь нашёл правильное имя
+    const topLevelKeys = Object.keys(prepare).filter(
+      (k) => !['pack_challenge_id', 'pack_id', 'draws_per_pack', 'expires_at',
+        'pack_count', 'packs_left_to_redeem', 'server_secret_hash', 'total_draws',
+        'usdc_permit_typed_data', 'user_attestation_typed_data', 'usdc_price'].includes(k),
+    );
+
+    throw new FatalError(
+      '❌ Подпись бэкенда не найдена в ответе API.\n\n' +
+      'Известные поля API: ' + JSON.stringify(Object.keys(prepare)) + '\n' +
+      'Неизвестные поля: ' + JSON.stringify(topLevelKeys) + '\n\n' +
+      'Что делать:\n' +
+      '  1. Открой DevTools → Network → /api/packs/redeem/prepare → Response\n' +
+      '  2. Найди поле со значением "0x..." длиной 130 символов (65 байт = подпись)\n' +
+      '  3. Сообщи имя этого поля — добавим в код\n\n' +
+      'Поля в user_attestation_typed_data: ' +
+      JSON.stringify(Object.keys(prepare.user_attestation_typed_data)),
+    );
+  }
+
+  const bSig = Signature.from(backendSigRaw as string);
+
+  // ── Кодирование 21 слота ─────────────────────────────────────────────────────
+  const allTypes = [
+    // Permit [0-6]
+    'address', 'address', 'uint256', 'uint256', 'uint256', 'bytes32', 'bytes32',
+    // Attestation [7 .. 7+N-1]
+    ...attestationTypes,
+    // userSig [N+7 .. N+9]
+    'uint256', 'bytes32', 'bytes32',
+    // backendSig [N+10 .. N+12]
+    'uint256', 'bytes32', 'bytes32',
+  ];
+
+  const allValues = [
+    // Permit
+    permit['owner'] as string,
+    permit['spender'] as string,
+    BigInt(permit['value'] as string | number),
+    BigInt(permit['deadline'] as string | number),
+    BigInt(pSig.v),
+    pSig.r,
+    pSig.s,
+    // Attestation (все поля по порядку из types[])
+    ...attestationValues,
+    // userSig
+    BigInt(uSig.v),
+    uSig.r,
+    uSig.s,
+    // backendSig
+    BigInt(bSig.v),
+    bSig.r,
+    bSig.s,
+  ];
 
   try {
-    return PACK_SALE_IFACE.encodeFunctionData('redeemPacks', [
-      packChallengeId,
-      packId,
-      packCount,
-      serverSecretHash,
-      expiry,
-      userSig,
-      permitValue,
-      permitNonce,
-      permitDeadline,
-      permitSig,
-    ]);
+    const encoded = coder.encode(allTypes, allValues);
+    return SELECTOR + encoded.slice(2); // убираем 0x перед склейкой
   } catch (err) {
     throw new FatalError(
-      'Не удалось закодировать redeemPacks() — возможно неверная сигнатура функции.\n' +
-      'Нужно подтвердить ABI через BaseScan:\n' +
-      '  basescan.org/address/0x4491Ac59d1e6A5D2E15a8048c2de34199e8De8dA#code\n' +
-      'Или скинь хэш реальной покупки — декодируем вместе.',
+      'AbiCoder.encode() упал — несовместимые типы.\n' +
+      `Types: ${JSON.stringify(allTypes)}\n` +
+      `Attestation fields: ${JSON.stringify(attestationTypeDef.map((f) => `${f.name}:${f.type}`))}`,
       err,
     );
   }

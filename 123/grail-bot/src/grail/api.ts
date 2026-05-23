@@ -86,6 +86,19 @@ export interface PrepareRedeemResponse {
   user_attestation_typed_data: Eip712TypedData;
   /** Цена в USDC — строка "15" */
   usdc_price: string;
+
+  /**
+   * Подпись бэкенда Grail — авторизует покупку на контракте.
+   * Поле может называться по-разному в разных версиях API.
+   * Если отсутствует — бот выведет список всех полей ответа для диагностики.
+   */
+  backend_sig?: string;
+  server_sig?: string;
+  hub_sig?: string;
+  attestation_sig?: string;
+
+  /** Catch-all: любые дополнительные поля API (не теряем при парсинге) */
+  [key: string]: unknown;
 }
 
 // ── Основная функция ──────────────────────────────────────────────────────────
