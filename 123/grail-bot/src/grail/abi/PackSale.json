@@ -1,63 +1,31 @@
 [
   {
-    "_comment": "ABI контракта продажи паков Grail.xyz (0x4491ac59d1e6a5d2e15a8048c2de34199e8de8da на Base).",
+    "_comment": "ABI контракта GrailPackHub (0x4491Ac59d1e6A5D2E15a8048c2de34199e8De8dA на Base).",
     "_note": [
-      "Phase 0 подтверждено: оплата в USDC (не ETH), нужна подпись бэкенда.",
-      "Точная сигнатура buy() — TODO: декодировать реальную tx через:",
-      "  cast tx <HASH> --rpc-url https://mainnet.base.org",
-      "  cast 4byte-decode <первые 10 символов calldata>",
-      "Обновить этот файл как только получите реальный ABI с BaseScan."
+      "Поток: POST /api/packs/redeem/prepare → подписать USDC permit + GrailPackUserAttestation → redeemPacks()",
+      "EIP-712 domain: { name: 'GrailPackHub', version: '1', chainId: 8453, verifyingContract: '0x4491...' }",
+      "TODO: подтвердить точную сигнатуру redeemPacks() через BaseScan ABI или декодирование реальной tx",
+      "  basescan.org/address/0x4491Ac59d1e6A5D2E15a8048c2de34199e8De8dA#code"
     ]
   },
   {
     "type": "function",
-    "name": "buy",
+    "name": "redeemPacks",
+    "_status": "BEST_GUESS — нужно подтвердить через BaseScan или реальный tx",
     "inputs": [
-      { "name": "quantity",  "type": "uint256", "internalType": "uint256" },
-      { "name": "signature", "type": "bytes",   "internalType": "bytes" },
-      { "name": "deadline",  "type": "uint256", "internalType": "uint256" }
+      { "name": "packChallengeId",  "type": "bytes32", "internalType": "bytes32" },
+      { "name": "packId",           "type": "bytes32", "internalType": "bytes32" },
+      { "name": "packCount",        "type": "uint256", "internalType": "uint256" },
+      { "name": "serverSecretHash", "type": "bytes32", "internalType": "bytes32" },
+      { "name": "expiry",           "type": "uint256", "internalType": "uint256" },
+      { "name": "userSig",          "type": "bytes",   "internalType": "bytes" },
+      { "name": "permitValue",      "type": "uint256", "internalType": "uint256" },
+      { "name": "permitNonce",      "type": "uint256", "internalType": "uint256" },
+      { "name": "permitDeadline",   "type": "uint256", "internalType": "uint256" },
+      { "name": "permitSig",        "type": "bytes",   "internalType": "bytes" }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable",
-    "_candidate": "PRIMARY — quantity + sig + deadline (наиболее частый паттерн)"
-  },
-  {
-    "type": "function",
-    "name": "purchasePacks",
-    "inputs": [
-      { "name": "quantity",  "type": "uint256", "internalType": "uint256" },
-      { "name": "signature", "type": "bytes",   "internalType": "bytes" },
-      { "name": "deadline",  "type": "uint256", "internalType": "uint256" }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "_candidate": "АЛЬТЕРНАТИВА A — другое имя функции"
-  },
-  {
-    "type": "function",
-    "name": "mint",
-    "inputs": [
-      { "name": "quantity",   "type": "uint256", "internalType": "uint256" },
-      { "name": "nonce",      "type": "uint256", "internalType": "uint256" },
-      { "name": "expiry",     "type": "uint256", "internalType": "uint256" },
-      { "name": "signature",  "type": "bytes",   "internalType": "bytes" }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "_candidate": "АЛЬТЕРНАТИВА B — с nonce (launchpad pattern)"
-  },
-  {
-    "type": "function",
-    "name": "buy",
-    "inputs": [
-      { "name": "packCount",   "type": "uint256", "internalType": "uint256" },
-      { "name": "maxPrice",    "type": "uint256", "internalType": "uint256" },
-      { "name": "deadline",    "type": "uint256", "internalType": "uint256" },
-      { "name": "signature",   "type": "bytes",   "internalType": "bytes" }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "_candidate": "АЛЬТЕРНАТИВА C — с maxPrice (anti-frontrun patten)"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -68,57 +36,29 @@
   },
   {
     "type": "function",
-    "name": "packPrice",
-    "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "paymentToken",
-    "inputs": [],
-    "outputs": [{ "name": "", "type": "address", "internalType": "address" }],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "paused",
     "inputs": [],
     "outputs": [{ "name": "", "type": "bool", "internalType": "bool" }],
     "stateMutability": "view"
   },
   {
-    "type": "function",
-    "name": "maxPerWallet",
-    "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "purchased",
+    "type": "event",
+    "name": "PackRedeemed",
+    "_status": "BEST_GUESS — уточнить через BaseScan или Tenderly",
     "inputs": [
-      { "name": "account", "type": "address", "internalType": "address" }
-    ],
-    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
-    "stateMutability": "view"
+      { "name": "redeemer",        "type": "address",   "indexed": true  },
+      { "name": "packChallengeId", "type": "bytes32",   "indexed": true  },
+      { "name": "packCount",       "type": "uint256",   "indexed": false },
+      { "name": "tokenIds",        "type": "uint256[]", "indexed": false }
+    ]
   },
   {
     "type": "event",
     "name": "PackBought",
     "inputs": [
-      { "name": "buyer",     "type": "address",   "indexed": true },
-      { "name": "quantity",  "type": "uint256",   "indexed": false },
-      { "name": "tokenIds",  "type": "uint256[]", "indexed": false }
-    ]
-  },
-  {
-    "type": "event",
-    "name": "PacksPurchased",
-    "inputs": [
-      { "name": "buyer",     "type": "address",   "indexed": true },
-      { "name": "quantity",  "type": "uint256",   "indexed": false },
-      { "name": "tokenIds",  "type": "uint256[]", "indexed": false }
+      { "name": "buyer",    "type": "address",   "indexed": true  },
+      { "name": "quantity", "type": "uint256",   "indexed": false },
+      { "name": "tokenIds", "type": "uint256[]", "indexed": false }
     ]
   },
   {
