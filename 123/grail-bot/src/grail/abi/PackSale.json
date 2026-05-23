@@ -1,0 +1,133 @@
+[
+  {
+    "_comment": "ABI контракта продажи паков Grail.xyz (0x4491ac59d1e6a5d2e15a8048c2de34199e8de8da на Base).",
+    "_note": [
+      "Phase 0 подтверждено: оплата в USDC (не ETH), нужна подпись бэкенда.",
+      "Точная сигнатура buy() — TODO: декодировать реальную tx через:",
+      "  cast tx <HASH> --rpc-url https://mainnet.base.org",
+      "  cast 4byte-decode <первые 10 символов calldata>",
+      "Обновить этот файл как только получите реальный ABI с BaseScan."
+    ]
+  },
+  {
+    "type": "function",
+    "name": "buy",
+    "inputs": [
+      { "name": "quantity",  "type": "uint256", "internalType": "uint256" },
+      { "name": "signature", "type": "bytes",   "internalType": "bytes" },
+      { "name": "deadline",  "type": "uint256", "internalType": "uint256" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "_candidate": "PRIMARY — quantity + sig + deadline (наиболее частый паттерн)"
+  },
+  {
+    "type": "function",
+    "name": "purchasePacks",
+    "inputs": [
+      { "name": "quantity",  "type": "uint256", "internalType": "uint256" },
+      { "name": "signature", "type": "bytes",   "internalType": "bytes" },
+      { "name": "deadline",  "type": "uint256", "internalType": "uint256" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "_candidate": "АЛЬТЕРНАТИВА A — другое имя функции"
+  },
+  {
+    "type": "function",
+    "name": "mint",
+    "inputs": [
+      { "name": "quantity",   "type": "uint256", "internalType": "uint256" },
+      { "name": "nonce",      "type": "uint256", "internalType": "uint256" },
+      { "name": "expiry",     "type": "uint256", "internalType": "uint256" },
+      { "name": "signature",  "type": "bytes",   "internalType": "bytes" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "_candidate": "АЛЬТЕРНАТИВА B — с nonce (launchpad pattern)"
+  },
+  {
+    "type": "function",
+    "name": "buy",
+    "inputs": [
+      { "name": "packCount",   "type": "uint256", "internalType": "uint256" },
+      { "name": "maxPrice",    "type": "uint256", "internalType": "uint256" },
+      { "name": "deadline",    "type": "uint256", "internalType": "uint256" },
+      { "name": "signature",   "type": "bytes",   "internalType": "bytes" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "_candidate": "АЛЬТЕРНАТИВА C — с maxPrice (anti-frontrun patten)"
+  },
+  {
+    "type": "function",
+    "name": "price",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "packPrice",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "paymentToken",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address", "internalType": "address" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "paused",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "bool", "internalType": "bool" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxPerWallet",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "purchased",
+    "inputs": [
+      { "name": "account", "type": "address", "internalType": "address" }
+    ],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "PackBought",
+    "inputs": [
+      { "name": "buyer",     "type": "address",   "indexed": true },
+      { "name": "quantity",  "type": "uint256",   "indexed": false },
+      { "name": "tokenIds",  "type": "uint256[]", "indexed": false }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "PacksPurchased",
+    "inputs": [
+      { "name": "buyer",     "type": "address",   "indexed": true },
+      { "name": "quantity",  "type": "uint256",   "indexed": false },
+      { "name": "tokenIds",  "type": "uint256[]", "indexed": false }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "Transfer",
+    "inputs": [
+      { "name": "from",    "type": "address", "indexed": true },
+      { "name": "to",      "type": "address", "indexed": true },
+      { "name": "tokenId", "type": "uint256", "indexed": true }
+    ]
+  }
+]

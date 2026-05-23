@@ -1,0 +1,40 @@
+{
+  "name": "grail-bot",
+  "version": "1.0.0",
+  "description": "Grail.xyz Base Executor Bot — reliable, idempotent, resume-on-crash",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && tsc --outDir dist",
+    "init": "tsx src/cli.ts init",
+    "start": "tsx src/cli.ts start",
+    "resume": "tsx src/cli.ts resume",
+    "status": "tsx src/cli.ts status",
+    "export": "tsx src/cli.ts export",
+    "dev:dry": "tsx src/cli.ts start --dry-run",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "audit": "npm audit",
+    "phase0:decode": "tsx tools/decode-tx.ts",
+    "check:env": "tsx tools/check-env.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "commander": "^12.1.0",
+    "ethers": "^6.13.2",
+    "pino": "^9.3.2",
+    "pino-pretty": "^11.2.2",
+    "undici": "^6.19.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.14.12",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
