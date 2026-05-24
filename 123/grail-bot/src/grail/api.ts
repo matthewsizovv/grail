@@ -88,14 +88,27 @@ export interface PrepareRedeemResponse {
   usdc_price: string;
 
   /**
-   * Подпись бэкенда Grail — авторизует покупку на контракте.
-   * Поле может называться по-разному в разных версиях API.
-   * Если отсутствует — бот выведет список всех полей ответа для диагностики.
+   * Подпись сервера Grail — авторизует покупку на контракте.
+   *
+   * Подтверждено из реального tx: поле "permit_signature" содержит
+   * предвычисленную подпись (v, r, s) плюс deadline и wallet_address.
+   * Эта подпись идёт в calldata как slots 15-17 (serverV, serverR, serverS).
+   *
+   * Несмотря на название "permit" — это НЕ USDC permit, а авторизация покупки.
+   */
+  permit_signature?: {
+    v: number;
+    r: string;
+    s: string;
+    deadline: string;
+    wallet_address: string;
+  };
+
+  /**
+   * Альтернативные имена на случай изменения API (вряд ли, но на всякий случай).
    */
   backend_sig?: string;
   server_sig?: string;
-  hub_sig?: string;
-  attestation_sig?: string;
 
   /** Catch-all: любые дополнительные поля API (не теряем при парсинге) */
   [key: string]: unknown;

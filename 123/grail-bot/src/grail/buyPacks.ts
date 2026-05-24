@@ -201,130 +201,115 @@ function coerceMessageValues(
 /**
  * Строит calldata для вызова redeemPacks() на контракте GrailPackHub.
  *
- * Использует ПОДТВЕРЖДЁННЫЙ селектор 0x2bb1bc60 (декодирован из реального tx
- * 0x0b63506498222a6e68c7a7b900802e6f8fcd0f651d307843006eb376aec5eff0).
+ * ▶ Селектор 0x2bb1bc60 подтверждён из реального tx:
+ *   0x0b63506498222a6e68c7a7b900802e6f8fcd0f651d307843006eb376aec5eff0
  *
- * 21-slot layout (каждый слот 32 байта):
- *   [0-6]   USDC permit: owner, spender, value, deadline, v, r, s
- *   [7-14]  Attestation: все поля GrailPackUserAttestation по порядку из types[]
- *           Читаются ДИНАМИЧЕСКИ из API — включая скрытые hubAddress, drawSalt и т.д.
- *   [15-17] userSig разбитый на v, r, s
- *   [18-20] backendSig разбитый на v, r, s (подпись сервера Grail)
+ * ▶ 21-slot layout (каждый слот 32 байта), восстановлен из реального calldata:
  *
- * Если контракт ревертится:
- *   1. Проверь что backendSig правильно получен из API
- *   2. Попробуй поменять порядок userSig/backendSig (15-17 ↔ 18-20)
- *   3. Скинь хэш упавшей tx — посмотрим revert reason через cast run
+ *   [0]  owner    = permit.owner      (wallet address)
+ *   [1]  spender  = permit.spender    (PackSale address)
+ *   [2]  value    = permit.value      (15 USDC в raw, = 15 000 000)
+ *   [3]  deadline = permit.deadline   (= attestation.expiry — одно значение!)
+ *   [4]  permitV  \
+ *   [5]  permitR  ─ подпись wallet.signTypedData(usdc_permit_typed_data)
+ *   [6]  permitS  /
+ *   [7]  packChallengeId  \
+ *   [8]  packId           |
+ *   [9]  redeemer         | поля user_attestation_typed_data.message
+ *   [10] hub = PackSale   | (= slot [1], контракт передаёт сам себя явно!)
+ *   [11] packCount        |
+ *   [12] expiry           | (= slot [3], то же значение что и deadline)
+ *   [13] nonce            | ← bytes32 из usdc_permit_typed_data.message.nonce!
+ *   [14] serverSecretHash /
+ *   [15] serverV  \
+ *   [16] serverR  ─ API permit_signature (сервер авторизует покупку)
+ *   [17] serverS  /
+ *   [18] userV    \
+ *   [19] userR    ─ подпись wallet.signTypedData(user_attestation_typed_data)
+ *   [20] userS    /
+ *
+ * ▶ Если tx ревертится — скинь хэш, посмотрим revert reason.
  */
 function buildRedeemCalldata(
   prepare: PrepareRedeemResponse,
-  userSig: string,
-  permitSig: string,
+  userSig: string,    // user signs user_attestation_typed_data  → slots 18-20
+  permitSig: string,  // user signs usdc_permit_typed_data       → slots 4-6
 ): string {
-  // Подтверждённый селектор из реального tx
   const SELECTOR = '0x2bb1bc60';
   const coder = AbiCoder.defaultAbiCoder();
 
-  // ── USDC Permit ─────────────────────────────────────────────────────────────
+  // ── Permit fields ─────────────────────────────────────────────────────────────
   const permit = prepare.usdc_permit_typed_data.message;
   const pSig = Signature.from(permitSig);
 
-  // ── User Attestation — читаем ВСЕ поля динамически ────────────────────────
-  // API возвращает полный types[] со всеми скрытыми полями (hubAddress, drawSalt…)
-  // Порядок полей в типе = порядок слотов в calldata
-  const attestation = prepare.user_attestation_typed_data.message;
-  const attestationTypeDef =
-    prepare.user_attestation_typed_data.types[
-      prepare.user_attestation_typed_data.primaryType
-    ] ?? [];
-
-  if (attestationTypeDef.length === 0) {
+  // Permit nonce — bytes32 random (EIP-3009 style)
+  // Восстановлен как slot 13 реального tx (0xa7e9f9c4...) — именно nonce из permit.message
+  const permitNonce = permit['nonce'] as string | bigint | number | undefined;
+  if (permitNonce === undefined) {
     throw new FatalError(
-      `types["${prepare.user_attestation_typed_data.primaryType}"] пуст или не найден. ` +
-      `Доступные типы: ${JSON.stringify(Object.keys(prepare.user_attestation_typed_data.types))}`,
+      '❌ Нет поля "nonce" в usdc_permit_typed_data.message.\n' +
+      `Поля permit.message: ${JSON.stringify(Object.keys(permit))}\n` +
+      `Полное permit.message: ${JSON.stringify(permit)}`,
     );
   }
+  // Нормализуем: если число — конвертируем в hex bytes32
+  const nonceBytes32 =
+    typeof permitNonce === 'string'
+      ? permitNonce // already hex string
+      : ('0x' + BigInt(permitNonce).toString(16).padStart(64, '0'));
 
-  const attestationTypes: string[] = [];
-  const attestationValues: unknown[] = [];
-
-  for (const field of attestationTypeDef) {
-    const raw = attestation[field.name];
-    if (raw === undefined) {
-      throw new FatalError(
-        `Поле "${field.name}" отсутствует в attestation.message.\n` +
-        `Имеющиеся поля: ${JSON.stringify(Object.keys(attestation))}\n` +
-        `Полный message: ${JSON.stringify(attestation)}`,
-      );
-    }
-    attestationTypes.push(field.type);
-    if (/^u?int\d*$/.test(field.type)) {
-      attestationValues.push(BigInt(raw as string | number));
-    } else {
-      attestationValues.push(raw as string);
-    }
-  }
-
-  // Ожидаем ровно 8 полей (slots 7-14). Если не 8 — предупреждаем, но не падаем.
-  if (attestationTypes.length !== 8) {
-    // This is just a warning — if tx reverts we'll need to debug
-    process.stderr.write(
-      `[WARN] Attestation fields: ${attestationTypes.length} (expected 8). ` +
-      `Fields: ${attestationTypeDef.map((f) => f.name).join(', ')}\n`,
-    );
-  }
-
-  // ── User Signature ───────────────────────────────────────────────────────────
+  // ── Attestation fields ────────────────────────────────────────────────────────
+  const att = prepare.user_attestation_typed_data.message;
   const uSig = Signature.from(userSig);
 
-  // ── Backend Signature ─────────────────────────────────────────────────────────
-  // Grail бэкенд подписывает attestation — авторизует покупку.
-  // Ищем в ответе API по нескольким возможным именам поля.
-  const backendSigRaw =
-    prepare.backend_sig ??
-    prepare.server_sig ??
-    prepare.hub_sig ??
-    prepare.attestation_sig ??
-    // Иногда вложено в user_attestation_typed_data (нестандартное поле)
-    ((prepare.user_attestation_typed_data as unknown) as Record<string, unknown>)['server_sig'] as string | undefined ??
-    ((prepare.user_attestation_typed_data as unknown) as Record<string, unknown>)['backend_sig'] as string | undefined;
+  // ── Server Authorization Signature = API's permit_signature ───────────────────
+  // Называется "permit_signature" в API но это подпись СЕРВЕРА (авторизация покупки)
+  // Содержит: {v, r, s, deadline, wallet_address}
+  const serverSig = prepare['permit_signature'] as
+    | { v: number; r: string; s: string; deadline: string; wallet_address: string }
+    | undefined;
 
-  if (!backendSigRaw) {
-    // Выводим все поля API чтобы пользователь нашёл правильное имя
-    const topLevelKeys = Object.keys(prepare).filter(
-      (k) => !['pack_challenge_id', 'pack_id', 'draws_per_pack', 'expires_at',
-        'pack_count', 'packs_left_to_redeem', 'server_secret_hash', 'total_draws',
-        'usdc_permit_typed_data', 'user_attestation_typed_data', 'usdc_price'].includes(k),
-    );
-
+  if (!serverSig) {
     throw new FatalError(
-      '❌ Подпись бэкенда не найдена в ответе API.\n\n' +
-      'Известные поля API: ' + JSON.stringify(Object.keys(prepare)) + '\n' +
-      'Неизвестные поля: ' + JSON.stringify(topLevelKeys) + '\n\n' +
-      'Что делать:\n' +
-      '  1. Открой DevTools → Network → /api/packs/redeem/prepare → Response\n' +
-      '  2. Найди поле со значением "0x..." длиной 130 символов (65 байт = подпись)\n' +
-      '  3. Сообщи имя этого поля — добавим в код\n\n' +
-      'Поля в user_attestation_typed_data: ' +
-      JSON.stringify(Object.keys(prepare.user_attestation_typed_data)),
+      '❌ permit_signature не найден в ответе API.\n' +
+      `Поля API: ${JSON.stringify(Object.keys(prepare))}\n\n` +
+      'Открой DevTools → ответ /api/packs/redeem/prepare → найди поле permit_signature',
     );
   }
 
-  const bSig = Signature.from(backendSigRaw as string);
-
-  // ── Кодирование 21 слота ─────────────────────────────────────────────────────
-  const allTypes = [
+  // ── 21-slot ABI encoding ──────────────────────────────────────────────────────
+  // NOTE: используем 'uint256' для всех числовых типов — ABI encoding одинаков
+  //       для uint8/uint32/uint256 (все паддятся до 32 байт). Функциональный
+  //       selector всё равно задаётся через SELECTOR константу напрямую.
+  const types = [
     // Permit [0-6]
-    'address', 'address', 'uint256', 'uint256', 'uint256', 'bytes32', 'bytes32',
-    // Attestation [7 .. 7+N-1]
-    ...attestationTypes,
-    // userSig [N+7 .. N+9]
-    'uint256', 'bytes32', 'bytes32',
-    // backendSig [N+10 .. N+12]
-    'uint256', 'bytes32', 'bytes32',
+    'address',   // 0  owner = wallet
+    'address',   // 1  spender = PackSale
+    'uint256',   // 2  value = 15M USDC
+    'uint256',   // 3  deadline (= attestation.expiry, одно значение!)
+    'uint256',   // 4  permitV
+    'bytes32',   // 5  permitR
+    'bytes32',   // 6  permitS
+    // Attestation [7-14]
+    'bytes32',   // 7  packChallengeId
+    'bytes32',   // 8  packId
+    'address',   // 9  redeemer = wallet (= slot 0)
+    'address',   // 10 hub = PackSale (= slot 1, передаётся снова явно!)
+    'uint256',   // 11 packCount
+    'uint256',   // 12 expiry (= slot 3, то же значение что и deadline)
+    'bytes32',   // 13 nonce (random bytes32 из usdc_permit_typed_data.message.nonce)
+    'bytes32',   // 14 serverSecretHash
+    // Server signature [15-17] = permit_signature from API
+    'uint256',   // 15 serverV
+    'bytes32',   // 16 serverR
+    'bytes32',   // 17 serverS
+    // User attestation signature [18-20]
+    'uint256',   // 18 userV
+    'bytes32',   // 19 userR
+    'bytes32',   // 20 userS
   ];
 
-  const allValues = [
+  const values: unknown[] = [
     // Permit
     permit['owner'] as string,
     permit['spender'] as string,
@@ -333,26 +318,39 @@ function buildRedeemCalldata(
     BigInt(pSig.v),
     pSig.r,
     pSig.s,
-    // Attestation (все поля по порядку из types[])
-    ...attestationValues,
-    // userSig
+    // Attestation
+    att['packChallengeId'] as string,
+    att['packId'] as string,
+    att['redeemer'] as string,
+    ADDRESSES.PACK_SALE,                              // hub = PackSale (hardcoded, same as spender)
+    BigInt(att['packCount'] as string | number),
+    BigInt(att['expiry'] as string | number),
+    nonceBytes32,                                     // random nonce from permit.message.nonce
+    att['serverSecretHash'] as string,
+    // Server sig (permit_signature from API)
+    BigInt(serverSig.v),
+    serverSig.r,
+    serverSig.s,
+    // User attestation sig
     BigInt(uSig.v),
     uSig.r,
     uSig.s,
-    // backendSig
-    BigInt(bSig.v),
-    bSig.r,
-    bSig.s,
   ];
 
   try {
-    const encoded = coder.encode(allTypes, allValues);
-    return SELECTOR + encoded.slice(2); // убираем 0x перед склейкой
+    const encoded = coder.encode(types, values);
+    const calldata = SELECTOR + encoded.slice(2); // убираем 0x перед склейкой
+    // Проверяем длину: должно быть ровно 676 байт (4 + 21*32)
+    const byteLen = (calldata.length - 2) / 2;
+    if (byteLen !== 676) {
+      throw new Error(`Неверная длина calldata: ${byteLen} байт (ожидается 676)`);
+    }
+    return calldata;
   } catch (err) {
     throw new FatalError(
-      'AbiCoder.encode() упал — несовместимые типы.\n' +
-      `Types: ${JSON.stringify(allTypes)}\n` +
-      `Attestation fields: ${JSON.stringify(attestationTypeDef.map((f) => `${f.name}:${f.type}`))}`,
+      'AbiCoder.encode() упал при построении calldata.\n' +
+      `Permit fields: ${JSON.stringify(Object.keys(permit))}\n` +
+      `Attestation fields: ${JSON.stringify(Object.keys(att))}`,
       err,
     );
   }
